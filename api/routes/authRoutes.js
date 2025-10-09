@@ -70,6 +70,13 @@ router.post("/login", async (req, res) => {
             { expiresIn: "7d" }
         );
 
+        // Refresh token'ı veritabanına kaydet
+        await prisma.user.update({
+            where: { id: user.id },
+            data: { refreshToken },
+        });
+
+
         console.log(`[LOGIN SUCCESS] ${user.email} - Token üretildi`);
 
         return successResponse(
@@ -111,19 +118,34 @@ router.post("/refresh", async (req, res) => {
     try {
         const decoded = jwt.verify(refreshToken, CONFIG.jwtRefreshSecret);
         const user = await prisma.user.findUnique({ where: { id: decoded.id } });
-        if (!user) return errorResponse(res, "Kullanıcı bulunamadı", 404);
+        if (!user || user.refreshToken !== refreshToken) {
+            return errorResponse(res, "Geçersiz veya eşleşmeyen refresh token", 403);
+        }
 
+        // 🔁 Yeni access & refresh token üret
         const newAccessToken = jwt.sign(
             { id: user.id, role: user.role },
             CONFIG.jwtSecret,
             { expiresIn: "2h" }
         );
 
-        console.log(`[TOKEN REFRESH] ${user.email} için yeni access token üretildi`);
+        const newRefreshToken = jwt.sign(
+            { id: user.id },
+            CONFIG.jwtRefreshSecret,
+            { expiresIn: "7d" }
+        );
+
+        // DB'deki refresh token'ı güncelle
+        await prisma.user.update({
+            where: { id: user.id },
+            data: { refreshToken: newRefreshToken },
+        });
+
+        console.log(`[TOKEN REFRESH] ${user.email} için yeni token üretildi`);
 
         return successResponse(
             res,
-            { accessToken: newAccessToken },
+            { accessToken: newAccessToken, refreshToken: newRefreshToken },
             "Token başarıyla yenilendi"
         );
     } catch (err) {
@@ -162,5 +184,24 @@ router.post("/change-password", authMiddleware, async (req, res) => {
         return errorResponse(res, "Şifre değiştirilirken bir hata oluştu", 500);
     }
 });
+
+/* ============================
+   🚪 LOGOUT
+============================ */
+router.post("/logout", authMiddleware, async (req, res) => {
+    try {
+        await prisma.user.update({
+            where: { id: req.user.id },
+            data: { refreshToken: null },
+        });
+
+        console.log(`[LOGOUT] ${req.user.id} çıkış yaptı`);
+        return successResponse(res, null, "Çıkış başarılı");
+    } catch (err) {
+        console.error("LOGOUT ERROR:", err);
+        return errorResponse(res, "Çıkış yapılırken hata oluştu", 500);
+    }
+});
+
 
 export default router;
